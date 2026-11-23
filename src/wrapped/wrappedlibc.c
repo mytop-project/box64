@@ -3572,6 +3572,12 @@ EXPORT void* my_mmap64(x64emu_t* emu, void *addr, size_t length, int prot, int f
     (void)emu;
     if(BOX64ENV(dynarec_log)>=LOG_DEBUG) {printf_log(LOG_NONE, "mmap64(%p, 0x%zx, 0x%x, 0x%x, %d, %zd) ", addr, length, prot, flags, fd, offset);}
     void* ret = box_mmap(addr, length, prot, flags, fd, offset);
+    if(ret==MAP_FAILED && (errno==EPERM || errno==EACCES) && (prot&PROT_EXEC) && fd>=0 && !(flags&MAP_ANONYMOUS)) {
+        // A file on a noexec mount (Android's shared storage and SD cards) refuses PROT_EXEC.
+        // Guest code never runs natively, so the host mapping doesn't need it; the guest's
+        // protection is still what the dynarec and updateProtection track below.
+        ret = box_mmap(addr, length, prot&~PROT_EXEC, flags, fd, offset);
+    }
     int e = errno;
     if(emu && box64_is32bits && ret!=MAP_FAILED && ((ret>(void*)0xc0000000) || (ret+length>(void*)0xc0000000))) {
         // do not allow allocating memory that high for 32bits process
@@ -3739,6 +3745,8 @@ EXPORT int my_mprotect(x64emu_t* emu, void *addr, unsigned long len, int prot)
     if(prot&PROT_WRITE)
         prot|=PROT_READ;    // PROT_READ is implicit with PROT_WRITE on x86_64
     int ret = mprotect(addr, len, prot);
+    if(ret && (errno==EPERM || errno==EACCES) && (prot&PROT_EXEC))
+        ret = mprotect(addr, len, prot&~PROT_EXEC);   // noexec mount, see my_mmap64
     #ifdef DYNAREC
     if(BOX64ENV(dynarec) && !ret && len) {
         if(prot& PROT_EXEC) {
